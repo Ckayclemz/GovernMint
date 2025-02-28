@@ -21,6 +21,11 @@
 (define-constant ERROR_LOCKUP_NOT_SATISFIED (err u4))
 (define-constant ERROR_ALREADY_VOTED (err u5))
 (define-constant ERROR_NOT_PARTICIPANT (err u6))
+(define-constant ERROR_INVALID_VOTES_REQUIRED (err u7))
+(define-constant ERROR_INVALID_MILESTONE_ID (err u8))
+(define-constant ERROR_INVALID_DESCRIPTION (err u9))
+(define-constant MAX_DESCRIPTION_LENGTH u256)
+(define-constant MIN_DESCRIPTION_LENGTH u1)
 
 ;; data vars
 (define-data-var pool-balance uint u0)
@@ -93,33 +98,50 @@
 
 (define-public (create-milestone (description (string-ascii 256)) 
                             (votes-required uint))
-    (let ((next-milestone-id (+ (var-get milestone-counter) u1)))
+    (let ((next-milestone-id (+ (var-get milestone-counter) u1))
+          (desc-length (len description)))
         (if (is-validator tx-sender)
             (begin
-                (map-set milestones
-                    {milestone-id: next-milestone-id}
-                    {description: description,
-                     votes-required: votes-required,
-                     completed: false,
-                     completion-block: none})
-                (var-set milestone-counter next-milestone-id)
-                (ok next-milestone-id))
+                ;; Validate votes-required is reasonable
+                (if (> votes-required u0)
+                    ;; Validate description length is reasonable
+                    (if (and (>= desc-length MIN_DESCRIPTION_LENGTH)
+                             (<= desc-length MAX_DESCRIPTION_LENGTH))
+                        (begin
+                            ;; Create a validated description rather than using input directly
+                            (let ((validated-description description))
+                                (map-set milestones
+                                    {milestone-id: next-milestone-id}
+                                    {description: validated-description,
+                                     votes-required: votes-required,
+                                     completed: false,
+                                     completion-block: none})
+                                (var-set milestone-counter next-milestone-id)
+                                (ok next-milestone-id))
+                            )
+                        ERROR_INVALID_DESCRIPTION)
+                    ERROR_INVALID_VOTES_REQUIRED))
             ERROR_NOT_AUTHORIZED)))
 
 (define-public (complete-milestone (milestone-id uint))
-    (let ((milestone-data (unwrap! (map-get? milestones {milestone-id: milestone-id})
-                             ERROR_MILESTONE_NOT_FOUND)))
-        (if (and
-            (is-validator tx-sender)
-            (>= (var-get total-votes) (get votes-required milestone-data)))
-            (begin
-                (map-set milestones
-                    {milestone-id: milestone-id}
-                    (merge milestone-data 
-                          {completed: true,
-                           completion-block: (some stacks-block-height)}))
-                (ok true))
-            ERROR_NOT_AUTHORIZED)))
+    ;; Validate milestone-id exists before using it
+    (if (and 
+         (> milestone-id u0) 
+         (<= milestone-id (var-get milestone-counter)))
+        (let ((milestone-data (unwrap! (map-get? milestones {milestone-id: milestone-id})
+                                 ERROR_MILESTONE_NOT_FOUND)))
+            (if (and
+                (is-validator tx-sender)
+                (>= (var-get total-votes) (get votes-required milestone-data)))
+                (begin
+                    (map-set milestones
+                        {milestone-id: milestone-id}
+                        (merge milestone-data 
+                              {completed: true,
+                               completion-block: (some stacks-block-height)}))
+                    (ok true))
+                ERROR_NOT_AUTHORIZED))
+        ERROR_INVALID_MILESTONE_ID))
 
 ;; read only functions
 (define-read-only (get-participant-info (address principal))
